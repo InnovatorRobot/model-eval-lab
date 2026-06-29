@@ -1,0 +1,22 @@
+# Models to benchmark.
+# The task for each model is auto-detected from the Hugging Face Hub
+# (its `pipeline_tag`), then models that share a task are grouped and
+# compared against each other.
+models:
+  - sentiment-analysis:
+      - distilbert-base-uncased-finetuned-sst-2-english
+      - cardiffnlp/twitter-roberta-base-sentiment-latest
+
+# Inputs used for the task-agnostic latency/memory measurements.
+# (Accuracy/F1 will use real labeled datasets in the next slice.)
+sample_texts:
+  - "I loved this movie!"
+  - "What a waste of time."
+  - "The plot was predictable but the acting somehow saved it."
+  - "Absolutely terrible, would not recommend to anyone."
+
+data_dir:
+  sentiment-analysis: data/sentiment-analysis
+
+# Number of timed runs per text when measuring latency.
+latency_runs: 20
