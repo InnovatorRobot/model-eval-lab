@@ -1,0 +1,30 @@
+# Runtime dependencies for model-eval-lab.
+# Install with:  python -m pip install -r requirements.txt
+#
+# Versions are lower bounds matching what the project was developed/tested
+# against; newer compatible releases should also work.
+
+# --- core engine ---
+transformers>=5.12
+torch>=2.2
+huggingface_hub>=1.21
+scikit-learn>=1.7
+psutil>=7.2
+PyYAML>=6.0
+numpy>=2.2
+
+# --- datasets (local CSV via pandas + optional Hugging Face Hub datasets) ---
+pandas>=2.3
+datasets>=5.0
+
+# --- image inputs ---
+Pillow>=10.1
+
+# --- audio inputs ---
+librosa>=0.11
+soundfile>=0.14
+
+# --- generation metrics (image-to-text / ASR) ---
+jiwer>=4.0
+sacrebleu>=2.6
+rouge-score>=0.1.2

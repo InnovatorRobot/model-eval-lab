@@ -1,22 +1,72 @@
-# Models to benchmark.
-# The task for each model is auto-detected from the Hugging Face Hub
-# (its `pipeline_tag`), then models that share a task are grouped and
-# compared against each other.
+# Models to benchmark, grouped by task.
+#
+# This is a multi-modal reference tool: text, image, and audio tasks are all
+# supported. Models that share a task are grouped together and compared
+# head-to-head. A task's input modality (text / image / audio) is inferred from
+# the task name in src/run_benchmark.py.
 models:
+  # --- text ---------------------------------------------------------------
   - sentiment-analysis:
       - distilbert-base-uncased-finetuned-sst-2-english
       - cardiffnlp/twitter-roberta-base-sentiment-latest
 
-# Inputs used for the task-agnostic latency/memory measurements.
-# (Accuracy/F1 will use real labeled datasets in the next slice.)
+  # --- image --------------------------------------------------------------
+  - image-classification:
+      - google/vit-base-patch16-224
+
+  - image-to-text: # captioning (generation task -> BLEU / ROUGE)
+      - nlpconnect/vit-gpt2-image-captioning
+
+  # --- audio --------------------------------------------------------------
+  - automatic-speech-recognition: # ASR (generation task -> WER)
+      - openai/whisper-tiny.en
+
+  - audio-classification:
+      - superb/hubert-base-superb-ks
+
+# Inputs used for the task-agnostic latency/memory pass. For image/audio tasks
+# these are file paths (resolved relative to the repo root) or URLs. If a task
+# is omitted here, its eval dataset inputs are used instead.
+sample_inputs:
+  image-classification:
+    - data/image-classification/sample.png
+  image-to-text:
+    - data/image-to-text/sample.png
+  automatic-speech-recognition:
+    - data/automatic-speech-recognition/sample.wav
+  audio-classification:
+    - data/audio-classification/sample.wav
+
+# Legacy text fallback: used for text tasks that have no sample_inputs override.
 sample_texts:
   - "I loved this movie!"
   - "What a waste of time."
   - "The plot was predictable but the acting somehow saved it."
   - "Absolutely terrible, would not recommend to anyone."
 
+# Per-task labeled / reference datasets (data_dir/<task>/data.csv).
+# CSV input column may be named: input, text, path, file, audio, image, sentence.
+# CSV reference column may be named: label, reference, target, caption, transcription.
 data_dir:
   sentiment-analysis: data/sentiment-analysis
+  image-classification: data/image-classification
+  image-to-text: data/image-to-text
+  automatic-speech-recognition: data/automatic-speech-recognition
+  audio-classification: data/audio-classification
 
-# Number of timed runs per text when measuring latency.
+# Optional: evaluate against a Hugging Face Hub dataset instead of a local CSV.
+# When a task appears here it takes precedence over its data_dir CSV. Inputs and
+# references are auto-detected from the dataset columns unless you name them.
+# Uncomment to use (requires network access to download the dataset):
+#
+# hf_datasets:
+#   sentiment-analysis:
+#     name: glue
+#     config: sst2
+#     split: validation[:50]
+#     input_column: sentence
+#     reference_column: label
+#     label_map: {0: negative, 1: positive}
+
+# Number of timed runs per input when measuring latency.
 latency_runs: 20
