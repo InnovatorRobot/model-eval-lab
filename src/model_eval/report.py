@@ -29,7 +29,7 @@ def print_report(results: list[Result]) -> None:
     for task, rows in groups.items():
         metric_names = sorted({name for r in rows for name in r.metrics}, key=_order_key)
 
-        header = f"{'model':55} {'latency (ms)':>14} {'memory (MB)':>13}"
+        header = f"{'model':45} {'backend':12} {'latency (ms)':>14} {'memory (MB)':>13}"
         header += "".join(f"{name:>9}" for name in metric_names)
         print(f"\n===== task: {task}  ({len(rows)} model(s)) =====")
         print(header)
@@ -42,7 +42,7 @@ def print_report(results: list[Result]) -> None:
             else (lambda x: x.avg_latency_ms)
         )
         for r in sorted(rows, key=sort_key):
-            line = f"{r.model:55} {r.avg_latency_ms:14.2f} {r.model_memory_mb:13.1f}"
+            line = f"{r.model:45} {r.backend:12} {r.avg_latency_ms:14.2f} {r.model_memory_mb:13.1f}"
             line += "".join(
                 f"{r.metrics[name]:9.3f}" if name in r.metrics else f"{'n/a':>9}"
                 for name in metric_names

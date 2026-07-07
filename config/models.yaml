@@ -4,11 +4,20 @@
 # supported. Models that share a task are grouped together and compared
 # head-to-head. A task's input modality (text / image / audio) is inferred from
 # the task name in src/run_benchmark.py.
+#
+# Each model entry may be either:
+#   - a plain name (runs on the default `pytorch` backend), or
+#   - a mapping to compare the SAME model across runtimes:
+#       {model: name, backend: onnxruntime}
+#       {model: name, backends: [pytorch, onnxruntime, openvino]}
+#   (onnxruntime/openvino require Optimum: pip install 'optimum[onnxruntime]')
 models:
   # --- text ---------------------------------------------------------------
   - sentiment-analysis:
       - distilbert-base-uncased-finetuned-sst-2-english
       - cardiffnlp/twitter-roberta-base-sentiment-latest
+      # Example: compare the same model on PyTorch vs. ONNX Runtime
+      # - {model: distilbert-base-uncased-finetuned-sst-2-english, backend: onnxruntime}
 
   # --- image --------------------------------------------------------------
   - image-classification:
@@ -70,3 +79,10 @@ data_dir:
 
 # Number of timed runs per input when measuring latency.
 latency_runs: 20
+
+# How each model runs:
+#   inline  - in the main process (fast; memory numbers are approximate).
+#   process - a fresh subprocess per model for an accurate memory baseline and
+#             crash isolation (a segfaulting model won't take down the run).
+# Can be overridden on the CLI with --launcher.
+launcher: inline

@@ -7,6 +7,7 @@ lives here, so the model-running code stays focused on inference.
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import REPO_ROOT
@@ -211,16 +212,72 @@ def sample_inputs_for(config: dict, task: str) -> list[str]:
     return []
 
 
-def iter_models(config: dict):
-    """Yield (task, model_name) pairs from the task-grouped YAML.
+def _matches_selector(model_name: str, selectors: list[str]) -> bool:
+    """True if `model_name` matches any selector (exact or substring, casefold)."""
+    name = model_name.lower()
+    return any(sel == name or sel in name for sel in selectors)
+
+
+# Execution backend a model runs on. Only `pytorch` is fully wired today;
+# `onnxruntime`/`openvino` are built via Optimum when its extras are installed.
+DEFAULT_BACKEND = "pytorch"
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """One benchmarkable unit: a model, its task, and the runtime backend.
+
+    The same model can appear under several backends so runtimes can be
+    compared head-to-head (e.g. pytorch vs. onnxruntime).
+    """
+
+    task: str
+    model: str
+    backend: str = DEFAULT_BACKEND
+
+
+def _parse_model_entry(task: str, entry) -> list[ModelSpec]:
+    """Expand one YAML model entry into one `ModelSpec` per backend.
+
+    Accepted shapes:
+        model-a                          # string -> default backend
+        {model: model-a, backend: onnxruntime}
+        {model: model-a, backends: [pytorch, onnxruntime]}
+    """
+    if isinstance(entry, str):
+        return [ModelSpec(task, entry)]
+
+    if isinstance(entry, dict):
+        name = entry.get("model")
+        if not name:
+            return []
+        backends = entry.get("backends")
+        if backends is None:
+            single = entry.get("backend", DEFAULT_BACKEND)
+            backends = [single]
+        return [ModelSpec(task, name, backend) for backend in backends]
+
+    return []
+
+
+def iter_models(config: dict, only: list[str] | None = None):
+    """Yield a `ModelSpec` for each configured (model, backend) to benchmark.
 
     Config shape:
         models:
           - sentiment-analysis:
-              - model-a
-              - model-b
+              - model-a                                  # pytorch
+              - {model: model-a, backend: onnxruntime}   # same model, ONNX
+              - {model: model-b, backends: [pytorch, openvino]}
+
+    If `only` is given, yield just the specs whose model name matches one of
+    those selectors (exact name or a case-insensitive substring), so callers
+    can compare a chosen subset instead of every configured model.
     """
+    selectors = [s.lower() for s in only] if only else None
     for group in config["models"]:
-        for task, model_names in group.items():
-            for model_name in model_names:
-                yield task, model_name
+        for task, entries in group.items():
+            for entry in entries:
+                for spec in _parse_model_entry(task, entry):
+                    if selectors is None or _matches_selector(spec.model, selectors):
+                        yield spec
