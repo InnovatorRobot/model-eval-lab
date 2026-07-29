@@ -1,32 +1,36 @@
-"""Metric computation and label normalization.
-
-`compute_classification_metrics` and `compute_generation_metrics` both return a
-plain ``dict[str, float]`` so the benchmark can treat metrics uniformly across
-modalities (and a web layer can serialize them directly).
-"""
+"""Metrics registered per task kind; each returns a plain dict[str, float]."""
 
 from __future__ import annotations
 
 import statistics
+from collections.abc import Callable
 
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
+Metric = Callable[[list[str], list[str]], dict[str, float]]
+_REGISTRY: dict[str, Metric] = {}
+
+
+def register(kind: str) -> Callable[[Metric], Metric]:
+    def decorate(fn: Metric) -> Metric:
+        _REGISTRY[kind] = fn
+        return fn
+
+    return decorate
+
 
 def normalize_label(label: str) -> str:
-    """Normalize a label so predictions and gold labels are comparable.
-
-    Different models phrase the same class differently (e.g. ``POSITIVE`` vs
-    ``positive``), so we lowercase and strip surrounding whitespace.
-    """
     return label.strip().lower()
 
 
-def compute_classification_metrics(preds: list[str], gold: list[str]) -> dict[str, float]:
-    """accuracy + macro precision/recall/F1 for classification tasks.
+def compute_metrics(kind: str, preds: list[str], refs: list[str]) -> dict[str, float]:
+    fn = _REGISTRY.get(kind)
+    return fn(preds, refs) if fn else {}
 
-    `preds` are expected to be already normalized (see `normalize_label`).
-    """
-    gold = [normalize_label(label) for label in gold]
+
+@register("classification")
+def _classification(preds: list[str], refs: list[str]) -> dict[str, float]:
+    gold = [normalize_label(r) for r in refs]
     precision, recall, f1, _ = precision_recall_fscore_support(
         gold, preds, average="macro", zero_division=0
     )
@@ -38,24 +42,16 @@ def compute_classification_metrics(preds: list[str], gold: list[str]) -> dict[st
     }
 
 
-def compute_generation_metrics(preds: list[str], refs: list[str]) -> dict[str, float]:
-    """WER (lower is better), BLEU (0-100), and ROUGE-L F1 for generation tasks.
-
-    Heavy metric libraries are imported lazily so text/vision-only runs stay
-    light.
-    """
+@register("generation")
+def _generation(preds: list[str], refs: list[str]) -> dict[str, float]:
     import jiwer
     import sacrebleu
     from rouge_score import rouge_scorer
 
     hyps = [p.strip().lower() for p in preds]
     golds = [r.strip().lower() for r in refs]
-
     scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
-    rouge_l = statistics.mean(
-        scorer.score(gold, hyp)["rougeL"].fmeasure for gold, hyp in zip(golds, hyps)
-    )
-
+    rouge_l = statistics.mean(scorer.score(g, h)["rougeL"].fmeasure for g, h in zip(golds, hyps))
     return {
         "wer": float(jiwer.wer(golds, hyps)),
         "bleu": float(sacrebleu.corpus_bleu(hyps, [golds]).score),

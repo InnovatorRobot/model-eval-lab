@@ -18,8 +18,13 @@ from __future__ import annotations
 
 import argparse
 
-from model_eval import load_config, print_report, run_benchmark
-from model_eval.data import iter_models
+from model_eval import (
+    iter_models,
+    load_config,
+    print_report,
+    run_benchmark,
+    save_results,
+)
 
 
 def main() -> None:
@@ -49,6 +54,11 @@ def main() -> None:
         "(a fresh subprocess per model for accurate memory + crash isolation). "
         "Defaults to the config's 'launcher' key, else 'inline'.",
     )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Do not write results to results/results.json (the dashboard source).",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -58,6 +68,10 @@ def main() -> None:
 
     results = run_benchmark(models=args.models or None, launcher=args.launcher)
     print_report(results)
+
+    if results and not args.no_save:
+        path = save_results(results)
+        print(f"\nSaved {len(results)} result(s) to {path}")
 
 
 if __name__ == "__main__":

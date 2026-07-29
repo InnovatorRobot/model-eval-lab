@@ -1,22 +1,16 @@
-"""Input resolution and dataset / sample loading.
-
-Everything that turns the YAML config + CSV files into concrete model inputs
-lives here, so the model-running code stays focused on inference.
-"""
+"""Load model inputs and references from local CSVs or Hugging Face datasets."""
 
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
 from pathlib import Path
 
 from .config import REPO_ROOT
-from .tasks import input_modality
+from .tasks import TaskSpec
 
-# Candidate CSV/dataset column names. Inputs are chosen per modality so that a
-# reference column such as `text` (ASR transcription, captions) is never
-# mistaken for the input of an image/audio task.
-_INPUT_COLUMNS_BY_MODALITY = {
+# Input columns are picked per modality so a `text` reference (captions, ASR
+# transcriptions) is never mistaken for the input of an image/audio task.
+_INPUT_COLUMNS = {
     "text": ("input", "text", "sentence", "prompt"),
     "image": ("image", "input", "path", "file", "img"),
     "audio": ("audio", "input", "path", "file"),
@@ -33,251 +27,89 @@ _REFERENCE_COLUMNS = (
 
 
 def resolve_input(value: str, modality: str) -> str:
-    """Resolve one raw input value for the given modality.
-
-    Text is returned unchanged. Image/audio values are treated as file paths
-    (resolved relative to the repo root) or passed through if they are URLs,
-    so the pipeline can load them directly.
-    """
+    """Text passes through; image/audio become repo-relative file paths or URLs."""
     if modality == "text":
         return value
     text = str(value)
     if text.startswith(("http://", "https://")):
         return text
     path = Path(text)
-    if not path.is_absolute():
-        path = REPO_ROOT / path
-    return str(path)
+    return str(path if path.is_absolute() else REPO_ROOT / path)
 
 
-def _pick_column(fieldnames, candidates) -> str | None:
-    """Return the first candidate column that exists in the CSV header."""
-    available = set(fieldnames or [])
-    for name in candidates:
-        if name in available:
-            return name
-    return None
+def _pick(columns, candidates) -> str | None:
+    available = set(columns or [])
+    return next((c for c in candidates if c in available), None)
 
 
-def _select_columns(fieldnames, modality: str) -> tuple[str | None, str | None]:
-    """Choose (input_col, reference_col) for a modality from a dataset header.
-
-    The input column is picked from modality-specific candidates; the reference
-    column is then picked from the remaining candidates (so the input column is
-    never also used as the reference).
-    """
-    input_candidates = _INPUT_COLUMNS_BY_MODALITY.get(modality, _INPUT_COLUMNS_BY_MODALITY["text"])
-    input_col = _pick_column(fieldnames, input_candidates)
-    ref_candidates = [c for c in _REFERENCE_COLUMNS if c != input_col]
-    ref_col = _pick_column(fieldnames, ref_candidates)
+def _select_columns(columns, modality: str) -> tuple[str | None, str | None]:
+    input_col = _pick(columns, _INPUT_COLUMNS.get(modality, _INPUT_COLUMNS["text"]))
+    ref_col = _pick(columns, [c for c in _REFERENCE_COLUMNS if c != input_col])
     return input_col, ref_col
 
 
-def load_dataset_rows(config: dict, task: str) -> tuple[list[str], list[str]]:
-    """Load (inputs, references) for a task from its `data_dir/data.csv`.
-
-    Inputs are resolved for the task's modality (file paths for image/audio).
-    References are class labels (classification) or reference text (generation).
-    Returns empty lists if the task has no dataset, so the benchmark can still
-    run the task-agnostic latency/memory metrics.
-    """
-    data_dirs = config.get("data_dir", {})
-    rel_dir = data_dirs.get(task)
-    if not rel_dir:
+def _load_csv(config: dict, task: TaskSpec) -> tuple[list, list[str]]:
+    rel_dir = config.get("data_dir", {}).get(task.name)
+    csv_path = REPO_ROOT / rel_dir / "data.csv" if rel_dir else None
+    if not csv_path or not csv_path.exists():
         return [], []
-
-    csv_path = REPO_ROOT / rel_dir / "data.csv"
-    if not csv_path.exists():
-        return [], []
-
-    modality = input_modality(task)
-    inputs: list[str] = []
-    references: list[str] = []
-    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+    with open(csv_path, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        input_col, ref_col = _select_columns(reader.fieldnames, modality)
-        if input_col is None or ref_col is None:
+        input_col, ref_col = _select_columns(reader.fieldnames, task.modality)
+        if not input_col or not ref_col:
             return [], []
-        for row in reader:
-            inputs.append(resolve_input(row[input_col], modality))
-            references.append(row[ref_col])
-    return inputs, references
+        rows = [(resolve_input(r[input_col], task.modality), r[ref_col]) for r in reader]
+    inputs, refs = map(list, zip(*rows)) if rows else ([], [])
+    return list(inputs), list(refs)
 
 
-def _resolve_hf_input(value, modality: str):
-    """Adapt one Hugging Face dataset cell into something a pipeline accepts.
-
-    Text passes through as a string and images pass through as PIL objects.
-    Audio cells arrive as ``{"array", "sampling_rate", "path"}``; transformers
-    pipelines expect ``{"raw", "sampling_rate"}``, so we remap those keys.
-    """
+def _hf_input(value, modality: str):
     if modality == "audio" and isinstance(value, dict) and "array" in value:
         return {"raw": value["array"], "sampling_rate": value["sampling_rate"]}
     return value
 
 
-def _resolve_reference(value, label_map: dict | None, feature) -> str:
-    """Turn a raw reference cell into a comparable string label/text.
-
-    Integer class labels are mapped to names via an explicit ``label_map`` or
-    the dataset's ``ClassLabel`` feature names when available.
-    """
+def _hf_reference(value, label_map, feature) -> str:
     if label_map and value in label_map:
         return str(label_map[value])
-    if isinstance(value, int):
-        names = getattr(feature, "names", None)
-        if names and 0 <= value < len(names):
-            return str(names[value])
+    names = getattr(feature, "names", None)
+    if isinstance(value, int) and names and 0 <= value < len(names):
+        return str(names[value])
     return str(value)
 
 
-def load_hf_dataset_rows(config: dict, task: str) -> tuple[list, list[str]]:
-    """Load (inputs, references) for a task from a Hugging Face Hub dataset.
-
-    Config shape (under a top-level ``hf_datasets`` mapping):
-        hf_datasets:
-          sentiment-analysis:
-            name: glue
-            config: sst2          # optional dataset config/subset
-            split: validation[:50]
-            input_column: sentence     # optional; auto-detected otherwise
-            reference_column: label    # optional; auto-detected otherwise
-            label_map: {0: negative, 1: positive}   # optional
-
-    Returns empty lists if the task has no `hf_datasets` entry.
-    """
-    specs = config.get("hf_datasets", {})
-    spec = specs.get(task)
+def _load_hf(config: dict, task: TaskSpec) -> tuple[list, list[str]]:
+    spec = config.get("hf_datasets", {}).get(task.name)
     if not spec:
         return [], []
-
     from datasets import load_dataset
 
-    dataset = load_dataset(
-        spec["name"],
-        spec.get("config"),
-        split=spec.get("split", "test"),
-    )
-
-    columns = dataset.column_names
-    modality = input_modality(task)
-    auto_input, auto_ref = _select_columns(columns, modality)
-    input_col = spec.get("input_column") or auto_input
+    dataset = load_dataset(spec["name"], spec.get("config"), split=spec.get("split", "test"))
+    auto_in, auto_ref = _select_columns(dataset.column_names, task.modality)
+    input_col = spec.get("input_column") or auto_in
     ref_col = spec.get("reference_column") or auto_ref
-    if input_col is None or ref_col is None:
+    if not input_col or not ref_col:
         return [], []
-
-    label_map = spec.get("label_map")
-    feature = dataset.features.get(ref_col)
-
-    inputs: list = []
-    references: list[str] = []
-    for row in dataset:
-        inputs.append(_resolve_hf_input(row[input_col], modality))
-        references.append(_resolve_reference(row[ref_col], label_map, feature))
-    return inputs, references
+    label_map, feature = spec.get("label_map"), dataset.features.get(ref_col)
+    inputs = [_hf_input(row[input_col], task.modality) for row in dataset]
+    refs = [_hf_reference(row[ref_col], label_map, feature) for row in dataset]
+    return inputs, refs
 
 
-def load_eval_data(config: dict, task: str) -> tuple[list, list[str]]:
-    """Load (inputs, references) for a task, preferring a configured HF dataset.
+def load_eval_data(config: dict, task: TaskSpec) -> tuple[list, list[str]]:
+    """Eval (inputs, references): a configured HF dataset wins over the local CSV."""
+    inputs, refs = _load_hf(config, task)
+    return (inputs, refs) if inputs else _load_csv(config, task)
 
-    Falls back to the local ``data_dir/<task>/data.csv`` when no Hugging Face
-    dataset is configured for the task.
-    """
-    inputs, references = load_hf_dataset_rows(config, task)
+
+def sample_inputs(config: dict, task: TaskSpec) -> list:
+    """Inputs for the latency pass: sample_inputs override, else eval data, else texts."""
+    override = config.get("sample_inputs", {}).get(task.name)
+    if override:
+        return [resolve_input(v, task.modality) for v in override]
+    inputs, _ = load_eval_data(config, task)
     if inputs:
-        return inputs, references
-    return load_dataset_rows(config, task)
-
-
-def sample_inputs_for(config: dict, task: str) -> list[str]:
-    """Pick the inputs used for the latency/memory pass.
-
-    Preference order: a per-task ``sample_inputs`` override, then the task's
-    eval dataset (local CSV or HF), then the legacy global ``sample_texts``
-    (text tasks only).
-    """
-    modality = input_modality(task)
-    overrides = config.get("sample_inputs", {})
-    if task in overrides:
-        return [resolve_input(v, modality) for v in overrides[task]]
-
-    dataset_inputs, _ = load_eval_data(config, task)
-    if dataset_inputs:
-        return dataset_inputs
-
-    if modality == "text" and "sample_texts" in config:
+        return inputs
+    if task.modality == "text" and "sample_texts" in config:
         return list(config["sample_texts"])
-
     return []
-
-
-def _matches_selector(model_name: str, selectors: list[str]) -> bool:
-    """True if `model_name` matches any selector (exact or substring, casefold)."""
-    name = model_name.lower()
-    return any(sel == name or sel in name for sel in selectors)
-
-
-# Execution backend a model runs on. Only `pytorch` is fully wired today;
-# `onnxruntime`/`openvino` are built via Optimum when its extras are installed.
-DEFAULT_BACKEND = "pytorch"
-
-
-@dataclass(frozen=True)
-class ModelSpec:
-    """One benchmarkable unit: a model, its task, and the runtime backend.
-
-    The same model can appear under several backends so runtimes can be
-    compared head-to-head (e.g. pytorch vs. onnxruntime).
-    """
-
-    task: str
-    model: str
-    backend: str = DEFAULT_BACKEND
-
-
-def _parse_model_entry(task: str, entry) -> list[ModelSpec]:
-    """Expand one YAML model entry into one `ModelSpec` per backend.
-
-    Accepted shapes:
-        model-a                          # string -> default backend
-        {model: model-a, backend: onnxruntime}
-        {model: model-a, backends: [pytorch, onnxruntime]}
-    """
-    if isinstance(entry, str):
-        return [ModelSpec(task, entry)]
-
-    if isinstance(entry, dict):
-        name = entry.get("model")
-        if not name:
-            return []
-        backends = entry.get("backends")
-        if backends is None:
-            single = entry.get("backend", DEFAULT_BACKEND)
-            backends = [single]
-        return [ModelSpec(task, name, backend) for backend in backends]
-
-    return []
-
-
-def iter_models(config: dict, only: list[str] | None = None):
-    """Yield a `ModelSpec` for each configured (model, backend) to benchmark.
-
-    Config shape:
-        models:
-          - sentiment-analysis:
-              - model-a                                  # pytorch
-              - {model: model-a, backend: onnxruntime}   # same model, ONNX
-              - {model: model-b, backends: [pytorch, openvino]}
-
-    If `only` is given, yield just the specs whose model name matches one of
-    those selectors (exact name or a case-insensitive substring), so callers
-    can compare a chosen subset instead of every configured model.
-    """
-    selectors = [s.lower() for s in only] if only else None
-    for group in config["models"]:
-        for task, entries in group.items():
-            for entry in entries:
-                for spec in _parse_model_entry(task, entry):
-                    if selectors is None or _matches_selector(spec.model, selectors):
-                        yield spec

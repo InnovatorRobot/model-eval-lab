@@ -1,32 +1,30 @@
-"""Task taxonomy.
-
-Two orthogonal questions about a task:
-  * What MODALITY are its inputs (text / image / audio)? -> how we feed inputs.
-  * What does it OUTPUT (free text vs. a class label)?   -> which metrics apply.
-"""
+"""Task taxonomy: modality + kind, with built-in defaults overridable via config."""
 
 from __future__ import annotations
 
-# Input modality -> how we feed/resolve a task's inputs. Anything not listed
-# here is treated as text.
-IMAGE_INPUT_TASKS = {"image-classification", "image-to-text", "image-segmentation"}
-AUDIO_INPUT_TASKS = {"automatic-speech-recognition", "audio-classification"}
+from dataclasses import dataclass
 
-# Output style -> how we read a prediction and which metrics apply.
-# Generation tasks emit free text (compared with WER/BLEU/ROUGE); everything
-# else is treated as classification (compared with accuracy/precision/recall/F1).
-GENERATION_TASKS = {"image-to-text", "automatic-speech-recognition"}
-
-
-def input_modality(task: str) -> str:
-    """Return the input modality of a task: 'text', 'image', or 'audio'."""
-    if task in IMAGE_INPUT_TASKS:
-        return "image"
-    if task in AUDIO_INPUT_TASKS:
-        return "audio"
-    return "text"
+# task name -> (input modality, output kind). Unknown tasks default to text/classification.
+_DEFAULTS: dict[str, tuple[str, str]] = {
+    "sentiment-analysis": ("text", "classification"),
+    "text-classification": ("text", "classification"),
+    "image-classification": ("image", "classification"),
+    "image-segmentation": ("image", "classification"),
+    "image-to-text": ("image", "generation"),
+    "audio-classification": ("audio", "classification"),
+    "automatic-speech-recognition": ("audio", "generation"),
+}
 
 
-def is_generation_task(task: str) -> bool:
-    """True if the task emits free text rather than a class label."""
-    return task in GENERATION_TASKS
+@dataclass(frozen=True)
+class TaskSpec:
+    name: str
+    modality: str = "text"  # text | image | audio
+    kind: str = "classification"  # classification | generation
+
+
+def resolve_task(name: str, config: dict | None = None) -> TaskSpec:
+    """Resolve a task's modality/kind from defaults, overridable via config `tasks:`."""
+    modality, kind = _DEFAULTS.get(name, ("text", "classification"))
+    override = (config or {}).get("tasks", {}).get(name, {})
+    return TaskSpec(name, override.get("modality", modality), override.get("kind", kind))
